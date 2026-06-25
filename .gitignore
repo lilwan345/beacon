@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Beacon runtime data (generated in $HOME, not the repo — listed for safety)
+.beacon/
