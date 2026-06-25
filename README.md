@@ -4,9 +4,8 @@
 > 它需要你时,光会转向你。
 
 A glass-domed lighthouse diorama that floats above all your windows (even
-fullscreen apps) and mirrors your **Claude Code** state in real time. Same
-job as the Wisp, different answer: not a pet — **a tiny world whose weather
-is your agent's state**.
+fullscreen apps) and mirrors your **Claude Code** state in real time. Not a
+pet — **a tiny world whose weather is your agent's state**.
 
 | Claude Code | In the dome |
 |---|---|
@@ -17,7 +16,7 @@ is your agent's state**.
 | **confused** | a squall — rain, lightning, the beam stutters |
 | **resting** | night — lamp off, stars out, one warm window in the cottage |
 
-## Design position (vs. the Wisp)
+## Design
 
 1. **The metaphor is the function.** A lighthouse exists to signal
    "you're needed here." The asking moment isn't an emote — it's the
@@ -25,16 +24,15 @@ is your agent's state**.
 2. **Transitions are weather.** The entire palette (sky/sea/light)
    crossfades over ~1.4s. Nothing swaps; dusk just falls.
 3. **A diorama, not a creature.** Calm-tech: glanceable from the corner of
-   your eye, zero neediness. Different shelf in the same store as a pet.
+   your eye, zero neediness.
 4. **Light-background safety by construction.** Every glow lands on the sky
-   *inside* the dome. Nothing luminous ever touches your wallpaper, so the
-   pale-ring-on-white-pages problem the Wisp fought is architecturally
-   impossible here.
-5. **Same brainstem.** Reads the same `~/.ai-desktop-toy/sessions/*.json`
-   written by your existing Claude Code hooks, with the same aggregation
-   semantics (asking sticky + transcript-freshness false-asking guard +
-   priority asking > confused > working > done > idle > resting). Zero
-   config; the two products can never disagree about what Claude is doing.
+   *inside* the dome. Nothing luminous ever touches your wallpaper, so it
+   can't ring or plate light onto a white page.
+5. **Reads your real agent state.** Watches `~/.ai-desktop-toy/sessions/*.json`,
+   the session state your Claude Code hooks write, and aggregates across
+   concurrent sessions: asking is sticky, a transcript-freshness guard kills
+   false "asking", and priority runs asking > confused > working > done >
+   idle > resting.
 
 ## Run
 
@@ -54,21 +52,16 @@ is your agent's state**.
 - Keys (`1-6` force, `0` live, `T` tour, `ESC` hide) exist but only work in
   environments where the window can take focus
 
-## Switching back to the Wisp
-
-Beacon never touches the Wisp's files, hooks, or login item.
+## Stopping it
 
 ```bash
-pkill -f beacon.py            # stop Beacon
-open /Applications/Wisp.app   # bring the Wisp back
+pkill -f beacon.py
 ```
-
-(Both can also run at once — they read the same state.)
 
 ## Files
 
 ```
-beacon.py   everything: detection mirror, sound synth, palettes, renderer,
+beacon.py   everything: state detection, sound synth, palettes, renderer,
             widget. Stdlib + PySide6 only.
 run.sh      launcher
 ~/.beacon/  its own prefs + generated sounds (the only place it writes)
