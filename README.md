@@ -3,6 +3,10 @@
 > When Claude needs you, the beacon turns to you.
 > 它需要你时,光会转向你。
 
+<p align="center">
+  <img src="assets/states.png" alt="Beacon's six states — working, asking, idle, done, confused, resting" width="860">
+</p>
+
 A glass-domed lighthouse diorama that floats above all your windows (even
 fullscreen apps) and mirrors your **Claude Code** state in real time. Not a
 pet — **a tiny world whose weather is your agent's state**.
@@ -15,6 +19,17 @@ pet — **a tiny world whose weather is your agent's state**.
 | **done** | a rainbow over golden water |
 | **confused** | a squall — rain, lightning, the beam stutters |
 | **resting** | night — lamp off, stars out, one warm window in the cottage |
+
+### The moment that matters — *asking*
+
+When Claude hits a question or a permission prompt, the dome falls to amber
+dusk, the lamp lights, a signal flag hoists, a ship's bell rings once — and
+the beam stops sweeping and **turns out of the glass toward you**. A
+lighthouse doing the one thing lighthouses do.
+
+<p align="center">
+  <img src="assets/asking.png" alt="The asking state — the beam turns to you" width="440">
+</p>
 
 ## Design
 
@@ -39,7 +54,7 @@ pet — **a tiny world whose weather is your agent's state**.
 **Requires:** macOS · Python 3.9+ · PySide6 (`pip install PySide6`)
 
 ```bash
-./run.sh            # or: /opt/anaconda3/bin/python3 beacon.py
+./run.sh            # or: python3 beacon.py
 ```
 
 - **Drag** to move (position persists to `~/.beacon/window.json`)
@@ -64,6 +79,8 @@ pkill -f beacon.py
 beacon.py   everything: state detection, sound synth, palettes, renderer,
             widget. Stdlib + PySide6 only.
 run.sh      launcher
+tools/      render_shots.py — regenerates the README images offscreen
+assets/     the rendered state images
 ~/.beacon/  its own prefs + generated sounds (the only place it writes)
 ```
 
