@@ -2,9 +2,10 @@
 """BEACON — a tiny lighthouse for your AI agent.
 
 A glass-domed lighthouse diorama floats above all your windows and mirrors
-your Claude Code state, read from the same filesystem hooks as the Wisp
-(~/.ai-desktop-toy/sessions/*.json). The metaphor IS the function: a
-lighthouse exists to signal "you're needed here."
+your Claude Code state, read from the small JSON files Claude Code hooks write
+to ~/.ai-desktop-toy/sessions/ (hooks/beacon_hook.py; `python3 hooks/install.py`
+sets them up). The metaphor IS the function: a lighthouse exists to signal
+"you're needed here."
 
     working   bright day — the lamp sweeps the sea briskly, clouds hurry
     asking    AMBER DUSK — the beam stops and TURNS TO YOU, pulsing wide;
@@ -14,17 +15,21 @@ lighthouse exists to signal "you're needed here."
     confused  a squall — rain, lightning, the beam stutters
     resting   night — lamp off, stars out, one warm window in the cottage
 
+With 2+ sessions live, each one is a small sailboat on the sea, sail colored
+by its own state; an asking session's boat sails to the front.
+
 Design notes (vs. a character pet):
   * It's a diorama, not a creature — calm-tech: glanceable, never needy.
   * Transitions are weather: the whole palette crossfades over ~1.4s, so
     state changes melt like time-of-day instead of swapping sprites.
   * Light-background safety BY CONSTRUCTION: every glow lands on the sky
     INSIDE the dome. Nothing luminous ever touches the desktop wallpaper,
-    so it can't ring/plate on white pages (a hard-learned Wisp lesson).
+    so it can't ring/plate on white pages.
 
 Keys (when focused): 1-6 force a state, 0 live, T tour (auto-cycle), ESC hide.
 Click = knock on the glass (it wobbles; if Claude is asking, the click also
-focuses the asking session's app). Drag to move; position persists.
+focuses the asking session's app). Click a boat = jump to that session.
+Drag to move; position persists.
 
 Self-contained: stdlib + PySide6. Writes only to ~/.beacon/.
 """
@@ -47,7 +52,7 @@ from typing import Iterator, Optional
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 from PySide6.QtGui import (
     QPainter, QColor, QBrush, QPen, QLinearGradient, QRadialGradient,
-    QPainterPath, QFont, QPixmap, QIcon, QPolygonF, QAction,
+    QPainterPath, QFont, QPixmap, QIcon, QPolygonF, QAction, QActionGroup,
 )
 from PySide6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu
 
@@ -56,6 +61,7 @@ SESSIONS_DIR = Path.home() / ".ai-desktop-toy" / "sessions"   # shared truth
 HOME = Path.home() / ".beacon"
 SOUND_DIR = HOME / "sounds"
 WINDOW_JSON = HOME / "window.json"
+PREFS_JSON = HOME / "prefs.json"
 
 W, H = 264, 292
 GCX, GCY, GR = 132.0, 142.0, 112.0          # globe center + radius
@@ -64,15 +70,15 @@ FRAME_MS = 33
 STATES = ["idle", "working", "asking", "done", "confused", "resting"]
 
 # ------------------------------------------------------------------ detection
-# Mirrors ai-desktop-toy/detect.py semantics exactly (same session files, same
-# staleness windows, same priority, same false-asking transcript guard) so the
-# two products can never disagree about what Claude is doing.
+# One JSON file per Claude Code session: {"state", "ts", "transcript", ...}.
+# A file's raw state is turned into an *effective* one with staleness windows,
+# and a false-asking guard: if the transcript was written after the "asking"
+# event, the permission was auto-resolved and Claude is working again.
 TRANSCRIPT_FRESH_SEC = 15.0
 HOOK_GRACE_SEC = 5.0
 WORKING_FALLBACK_SEC = 300.0
 ASKING_STALE_SEC = 86400.0
 IDLE_STALE_SEC = 30.0
-CLEANUP_AFTER_SEC = 86400.0
 EVENT_STALE_SEC = 6.0
 _EVENT_STATES = ("confused", "done")
 _PRIORITY = {"asking": 3, "confused": 2.5, "working": 2, "done": 1.5,
@@ -123,6 +129,7 @@ def _effective_states(now: float) -> Iterator[tuple]:
             if age <= IDLE_STALE_SEC:
                 eff = "idle"
         if eff is not None:
+            d["_key"] = str(d.get("session") or f.stem)
             yield eff, d
 
 
@@ -147,14 +154,23 @@ def winning_session() -> Optional[dict]:
     return best
 
 
+def live_sessions(now: Optional[float] = None) -> list:
+    """Every live session record (+ 'effective_state'), ordered by session key."""
+    now = time.time() if now is None else now
+    recs = []
+    for eff, d in _effective_states(now):
+        r = dict(d)
+        r["effective_state"] = eff
+        recs.append(r)
+    return sorted(recs, key=lambda r: r["_key"])
+
 
 # ---------------------------------------------------------------------- focus
-# Ported from the Wisp's focus.py (same contract): clicking the dome jumps to
-# the terminal of the session driving the current state. NON-DESTRUCTIVE: only
-# raises/selects existing windows; never opens folders or creates tabs.
-# Writes the SAME focus_request.json the Wisp VSCode extension watches, so the
-# already-installed extension focuses the exact integrated-terminal pane for
-# Beacon too.
+# Clicking the dome jumps to the terminal of the session driving the current
+# state. NON-DESTRUCTIVE: only raises/selects existing windows; never opens
+# folders or creates tabs. iTerm2 by session UUID, Terminal.app by tty, other
+# apps by bundle id. For VS Code it also writes focus_request.json, which a
+# companion extension can watch to focus the exact integrated-terminal pane.
 FOCUS_REQUEST = os.path.expanduser("~/.ai-desktop-toy/focus_request.json")
 
 _ITERM_SCPT = """
@@ -354,6 +370,30 @@ def _gen_knock(dur=0.2):
 SOUND_GENS = {"idle": _gen_waves, "working": _gen_day, "asking": _gen_bell,
               "done": _gen_done, "confused": _gen_thunder,
               "resting": _gen_night, "knock": _gen_knock}
+# Tray > Sound: every state change, only the moments that want you, or silence.
+SOUND_MODES = {"all": "All sounds", "alerts": "Alerts only (asking, done)",
+               "off": "Off"}
+ALERT_SOUNDS = ("asking", "done", "knock")
+
+
+def sound_allowed(mode: str, name: str) -> bool:
+    return mode == "all" or (mode == "alerts" and name in ALERT_SOUNDS)
+
+
+def load_prefs() -> dict:
+    try:
+        d = json.loads(PREFS_JSON.read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_prefs(d: dict) -> None:
+    try:
+        HOME.mkdir(parents=True, exist_ok=True)
+        PREFS_JSON.write_text(json.dumps(d))
+    except OSError:
+        pass
 
 
 def ensure_sounds() -> dict:
@@ -540,6 +580,101 @@ def update_anim(A: Anim, state: str, t: float, dt: float, pal: dict) -> None:
     A.flag += (target - A.flag) * min(1.0, dt * 3.2)
 
 
+# ---------------------------------------------------------------------- fleet
+# With 2+ sessions live, each one is a small sailboat whose sail shows its own
+# state; the dome still shows the aggregate. (One session keeps the classic
+# diorama: the dome already IS that session.) An asking session's boat sails
+# to the front row, nearest you, under a glowing amber sail. Click a boat to
+# jump to that session's terminal.
+FLEET_MIN = 2
+MAX_BOATS = 5
+SAIL = {"working": (248, 248, 242), "asking": (255, 170, 60),
+        "idle": (226, 214, 196), "done": (255, 222, 132),
+        "confused": (160, 176, 198), "resting": (120, 130, 150)}
+_BACK_ROW = (-0.64, 0.64, -0.34, 0.34, 0.0)     # x as a fraction of GR
+_FRONT_ROW = (0.0, -0.32, 0.32, -0.55, 0.55)
+_BACK_Y, _FRONT_Y = SEA_Y + 25, SEA_Y + 47
+_BACK_S, _FRONT_S = 0.9, 1.25                   # nearer = bigger
+
+
+def fleet_targets(recs: list) -> dict:
+    """session key -> (x, y, scale, state). Empty below FLEET_MIN sessions."""
+    if len(recs) < FLEET_MIN:
+        return {}
+    # Keep asking sessions first so they are never the ones cut past MAX_BOATS.
+    shown = sorted(recs, key=lambda r: r["effective_state"] != "asking")[:MAX_BOATS]
+    out, front, back = {}, 0, 0
+    for r in sorted(shown, key=lambda r: r["_key"]):
+        st = r["effective_state"]
+        if st == "asking":
+            out[r["_key"]] = (GCX + _FRONT_ROW[front] * GR, _FRONT_Y, _FRONT_S, st)
+            front += 1
+        else:
+            out[r["_key"]] = (GCX + _BACK_ROW[back] * GR, _BACK_Y, _BACK_S, st)
+            back += 1
+    return out
+
+
+def step_fleet(boats: dict, targets: dict, dt: float) -> None:
+    """Ease boats toward their targets (so they *sail*), fade them in and out."""
+    k = min(1.0, dt * 1.8)
+    for key, (x, y, sc, st) in targets.items():
+        b = boats.get(key)
+        if b is None:                  # new boat: appears in place, fades in
+            b = boats[key] = dict(x=x, y=y, s=sc, a=0.0, col=SAIL[st],
+                                  ph=sum(map(ord, key)) % 628 / 100.0)
+        b["x"] += (x - b["x"]) * k
+        b["y"] += (y - b["y"]) * k
+        b["s"] += (sc - b["s"]) * k
+        b["col"] = tuple(c + (t - c) * k for c, t in zip(b["col"], SAIL[st]))
+        b["state"] = st
+        b["a"] = min(1.0, b["a"] + dt * 1.5)
+    for key in [k_ for k_ in boats if k_ not in targets]:
+        boats[key]["a"] -= dt * 1.5
+        if boats[key]["a"] <= 0.0:
+            del boats[key]
+
+
+def boat_rect(b: dict) -> QRectF:
+    """Click target for a boat, in widget coordinates."""
+    s = b["s"]
+    return QRectF(b["x"] - 12 * s, b["y"] - 19 * s, 24 * s, 26 * s)
+
+
+def _draw_boats(p: QPainter, boats: dict, t: float, pal: dict) -> None:
+    amb = pal["amb"]
+    for b in sorted(boats.values(), key=lambda b: b["y"]):   # far row first
+        a, s = b["a"], b["s"]
+        if a <= 0.02:
+            continue
+        p.save()
+        p.translate(b["x"], b["y"] + 1.6 * sin(t * 1.8 + b["ph"]))
+        p.rotate(3.5 * sin(t * 1.3 + b["ph"]))
+        p.setBrush(QBrush(C(pal["sea_hi"], 55 * a)))          # reflection
+        p.drawEllipse(QPointF(0, 5 * s), 10.5 * s, 1.8 * s)
+        p.setBrush(QBrush(C(mul((66, 52, 46), amb), 255 * a)))  # hull
+        p.drawPolygon(QPolygonF([QPointF(-9.5 * s, 0), QPointF(9.5 * s, 0),
+                                 QPointF(6.5 * s, 4 * s), QPointF(-6.5 * s, 4 * s)]))
+        p.setPen(QPen(C(mul((58, 52, 50), amb), 230 * a), max(0.8, s)))
+        p.drawLine(QPointF(0, 0), QPointF(0, -16 * s))           # mast
+        p.setPen(Qt.NoPen)
+        col = mul(tuple(int(c) for c in b["col"]), 0.55 + 0.45 * min(1.0, amb))
+        if b.get("state") == "asking":                           # lantern glow
+            pulse = 0.6 + 0.4 * sin(t * 2 * pi * 1.3)
+            g = QRadialGradient(3 * s, -8 * s, 17 * s)
+            g.setColorAt(0, C((255, 190, 90), 120 * a * pulse))
+            g.setColorAt(1, C((255, 190, 90), 0))
+            p.setBrush(QBrush(g))
+            p.drawEllipse(QPointF(3 * s, -8 * s), 17 * s, 17 * s)
+        p.setBrush(QBrush(C(col, 240 * a)))                      # mainsail
+        p.drawPolygon(QPolygonF([QPointF(1 * s, -15 * s), QPointF(1 * s, -1.5 * s),
+                                 QPointF(9 * s, -1.5 * s)]))
+        p.setBrush(QBrush(C(mul(col, 0.9), 225 * a)))            # jib
+        p.drawPolygon(QPolygonF([QPointF(-1 * s, -12.5 * s), QPointF(-1 * s, -1.5 * s),
+                                 QPointF(-6.5 * s, -1.5 * s)]))
+        p.restore()
+
+
 # ------------------------------------------------------------------- renderer
 def _globe_path() -> QPainterPath:
     path = QPainterPath()
@@ -548,7 +683,7 @@ def _globe_path() -> QPainterPath:
 
 
 def render_scene(p: QPainter, state: str, t: float, A: Anim, pal: dict,
-                 caption: str = "") -> None:
+                 caption: str = "", boats: Optional[dict] = None) -> None:
     """Pure draw — testable offscreen. Painter is the full W×H widget."""
     p.setPen(Qt.NoPen)
 
@@ -758,6 +893,10 @@ def render_scene(p: QPainter, state: str, t: float, A: Anim, pal: dict,
             p.setBrush(QBrush(grad))
             p.drawPolygon(poly)
 
+    # One boat per session (2+ live sessions only).
+    if boats:
+        _draw_boats(p, boats, t, pal)
+
     # Near clouds (in front of the island for depth).
     for c in A.clouds:
         draw_cloud(c, front=True)
@@ -882,6 +1021,12 @@ class Beacon(QWidget):
         self._last_frame = self._t0
         self.A = Anim()
         self.sounds = ensure_sounds()
+        self.prefs = load_prefs()
+        self.sound_mode = self.prefs.get("sound", "all")
+        if self.sound_mode not in SOUND_MODES:
+            self.sound_mode = "all"
+        self._fleet: list = []           # live session records (live mode only)
+        self._boats: dict = {}           # session key -> animated boat
 
         self._live = detect_state()
         self._shown = self._live
@@ -908,9 +1053,9 @@ class Beacon(QWidget):
         self._level_timer.start(500)
         self._apply_macos_level()
 
-    # ----- macOS: float above fullscreen, every Space (same recipe as Wisp:
-    # resolve OUR NSWindow via winId — nsapp.windows() can miss Tool windows —
-    # then the killer pair HidesOnDeactivate/CanHide=False + orderFront).
+    # ----- macOS: float above fullscreen, every Space. Resolve OUR NSWindow
+    # via winId (nsapp.windows() can miss Tool windows), then the killer pair
+    # HidesOnDeactivate/CanHide=False + orderFront.
     def _apply_macos_level(self):
         try:
             import objc
@@ -971,9 +1116,39 @@ class Beacon(QWidget):
         if self._forced:
             return self._forced
         if now >= self._next_poll:
-            self._live = detect_state()
+            self._fleet = live_sessions(now)
+            self._live = (max((r["effective_state"] for r in self._fleet),
+                              key=lambda s: _PRIORITY.get(s, 0))
+                          if self._fleet else "resting")
             self._next_poll = now + 0.5
         return self._live
+
+    # ----- modes (keys and the tray menu both go through these)
+    def mode(self) -> str:
+        """'live', 'tour', or the forced state's name."""
+        return "tour" if self._tour else (self._forced or "live")
+
+    def set_live(self):
+        self._forced = None
+        self._tour = False
+
+    def set_tour(self, on: bool = True):
+        self._tour = on
+        self._forced = None
+        self._tour_next = 0.0
+
+    def force(self, state: str):
+        self._forced = state
+        self._tour = False
+
+    def set_sound_mode(self, mode: str):
+        self.sound_mode = mode
+        self.prefs["sound"] = mode
+        save_prefs(self.prefs)
+
+    def _play(self, name: str):
+        if sound_allowed(self.sound_mode, name):
+            play(self.sounds, name)
 
     def _begin_fade(self, new_state: str, now: float):
         # Snapshot the CURRENT blend as the fade source → re-targeting
@@ -981,7 +1156,7 @@ class Beacon(QWidget):
         self._pal_src = self._current_pal(now)
         self._pal_dst = PALETTES[new_state]
         self._fade_t0 = now
-        play(self.sounds, new_state)
+        self._play(new_state)
 
     def _current_pal(self, now: float) -> dict:
         f = (now - self._fade_t0) / 1.4
@@ -1015,21 +1190,27 @@ class Beacon(QWidget):
             self.A.wobble_t0 = time.time() - self._t0
             self.A.wobble_amp = 2.2
         else:
-            self._knock()
+            self._knock(ev.position())
         self._press_pos = None
         self._dragging = False
 
-    def _knock(self):
+    def _knock(self, pos=None):
         now = time.time()
         self.A.wobble_t0 = now - self._t0
         self.A.wobble_amp = 4.0
         for g in self.A.gulls:               # gulls scatter
             g["sp"] *= 3.0
-        play(self.sounds, "knock")
-        # Jump to the terminal of the session driving the current state —
-        # the asking one is exactly the terminal that needs you. Same focus
-        # contract as the Wisp (iTerm UUID / Terminal tty / VSCode extension).
-        rec = winning_session()
+        self._play("knock")
+        # A click on a boat jumps to that session; anywhere else jumps to the
+        # session driving the current state — the asking one is exactly the
+        # terminal that needs you.
+        rec = None
+        if pos is not None:
+            hit = next((key for key, b in self._boats.items()
+                        if b["a"] > 0.5 and boat_rect(b).contains(pos)), None)
+            rec = next((r for r in self._fleet if r["_key"] == hit), None)
+        if rec is None:
+            rec = winning_session()
         if rec:
             threading.Thread(target=focus_session, args=(rec,),
                              daemon=True).start()
@@ -1039,15 +1220,11 @@ class Beacon(QWidget):
         if k == Qt.Key_Escape:
             self.hide()
         elif Qt.Key_1 <= k <= Qt.Key_6:
-            self._forced = STATES[k - Qt.Key_1]
-            self._tour = False
+            self.force(STATES[k - Qt.Key_1])
         elif k == Qt.Key_0:
-            self._forced = None
-            self._tour = False
+            self.set_live()
         elif k == Qt.Key_T:
-            self._tour = not self._tour
-            self._forced = None
-            self._tour_next = 0.0
+            self.set_tour(not self._tour)
 
     # ----- paint
     def paintEvent(self, ev):
@@ -1061,6 +1238,8 @@ class Beacon(QWidget):
         dt = max(0.0, min(0.06, now - self._last_frame))
         self._last_frame = now
         update_anim(self.A, state, t, dt, pal)
+        live = not (self._tour or self._forced)
+        step_fleet(self._boats, fleet_targets(self._fleet) if live else {}, dt)
 
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -1079,7 +1258,7 @@ class Beacon(QWidget):
             caption = f"TOUR · {state.upper()}"
         elif self._forced:
             caption = f"FORCED · {state.upper()}"
-        render_scene(p, state, t, self.A, pal, caption)
+        render_scene(p, state, t, self.A, pal, caption, self._boats)
         p.end()
 
 
@@ -1109,38 +1288,48 @@ def main():
 
     tray = QSystemTrayIcon(_tray_icon())
     menu = QMenu()
-    act_show = QAction("Show / Hide")
-    act_show.triggered.connect(lambda: w.setVisible(not w.isVisible()))
-    act_tour = QAction("Tour mode (auto-cycle states)")
-    act_tour.triggered.connect(lambda: (setattr(w, "_tour", not w._tour),
-                                        setattr(w, "_forced", None),
-                                        setattr(w, "_tour_next", 0.0)))
-    act_live = QAction("Live mode")
-    act_live.triggered.connect(lambda: (setattr(w, "_forced", None),
-                                        setattr(w, "_tour", False)))
-    act_quit = QAction("Quit Beacon")
-    act_quit.triggered.connect(app.quit)
-    force_menu = QMenu("Force state")
-    force_actions = []
-    def _mk_force(st):
-        def f():
-            w._forced = st
-            w._tour = False
-        return f
-    for st in STATES:
-        fa = QAction(st.capitalize())
-        fa.triggered.connect(_mk_force(st))
-        force_menu.addAction(fa)
-        force_actions.append(fa)
-    for a in (act_show, act_tour, act_live):
-        menu.addAction(a)
-    menu.addMenu(force_menu)
+    keep = []                                 # QActions must outlive main()
+
+    def action(text, slot, parent=menu, group=None, checkable=False):
+        a = QAction(text, parent)
+        a.setCheckable(checkable)
+        a.triggered.connect(slot)
+        if group is not None:
+            group.addAction(a)
+        parent.addAction(a)
+        keep.append(a)
+        return a
+
+    action("Show / Hide", lambda: w.setVisible(not w.isVisible()))
     menu.addSeparator()
-    menu.addAction(act_quit)
+    modes = QActionGroup(menu)                # Live / Tour / Force: exactly one
+    mode_actions = {
+        "live": action("Live (follow Claude Code)", w.set_live, group=modes, checkable=True),
+        "tour": action("Tour mode (auto-cycle states)", lambda: w.set_tour(True),
+                       group=modes, checkable=True),
+    }
+    force_menu = menu.addMenu("Force state")
+    for st in STATES:
+        mode_actions[st] = action(st.capitalize(), lambda _=False, st=st: w.force(st),
+                                  parent=force_menu, group=modes, checkable=True)
+
+    sound_menu = menu.addMenu("Sound")
+    sounds = QActionGroup(sound_menu)
+    sound_actions = {m: action(label, lambda _=False, m=m: w.set_sound_mode(m),
+                               parent=sound_menu, group=sounds, checkable=True)
+                     for m, label in SOUND_MODES.items()}
+    menu.addSeparator()
+    action("Quit Beacon", app.quit)
+
+    def sync_checks():                        # keys can change the mode too
+        mode_actions[w.mode()].setChecked(True)
+        sound_actions[w.sound_mode].setChecked(True)
+    menu.aboutToShow.connect(sync_checks)
+    sync_checks()
+
     tray.setContextMenu(menu)
     tray.setToolTip("Beacon — a tiny lighthouse for your AI")
-    tray._refs = (act_show, act_tour, act_live, act_quit,
-                  force_menu, force_actions)   # keep from GC
+    tray._refs = (menu, modes, sounds, keep)  # keep from GC
     tray.show()
 
     app.exec()

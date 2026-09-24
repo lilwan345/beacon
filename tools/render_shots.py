@@ -6,6 +6,7 @@ each state's animation to a flattering frame, supersamples, and writes:
 
     assets/states.png   a labeled 3x2 grid of all six states (README hero)
     assets/asking.png   the signature "beam turns to you" moment, full size
+    assets/fleet.png    three sessions at once: one boat each, the asking one up front
 
 Run:  QT_QPA_PLATFORM=offscreen python3 tools/render_shots.py
 """
@@ -42,15 +43,21 @@ TILES = [
 
 
 def render_scene_img(state: str, scale: float, settle: float,
-                     force_bolt: bool) -> QImage:
-    """Step the animation to a settled frame, then supersample-render it."""
+                     force_bolt: bool, sessions: tuple = ()) -> QImage:
+    """Step the animation to a settled frame, then supersample-render it.
+
+    `sessions` is a tuple of per-session states; 2+ of them draw the fleet.
+    """
     A = B.Anim(seed=7)
-    random.seed(abs(hash(state)) % 9973)        # deterministic gulls/clouds
+    random.seed(sum(map(ord, state)))           # deterministic gulls/clouds
     pal = B.PALETTES[state]
+    recs = [{"_key": f"s{i}", "effective_state": st} for i, st in enumerate(sessions)]
+    boats: dict = {}
     t, dt = 0.0, 1.0 / 120.0
     for _ in range(int(settle / dt)):
         t += dt
         B.update_anim(A, state, t, dt, pal)
+        B.step_fleet(boats, B.fleet_targets(recs), dt)
     if force_bolt:                              # freeze mid-flash so a bolt shows
         A.flash_t0 = t - 0.04
         A.bolt_seed = 3
@@ -61,7 +68,7 @@ def render_scene_img(state: str, scale: float, settle: float,
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing, True)
     p.scale(scale, scale)
-    B.render_scene(p, state, t, A, pal, "")
+    B.render_scene(p, state, t, A, pal, "", boats)
     p.end()
     return img
 
@@ -116,9 +123,10 @@ def build_grid(scale: float = 1.8) -> QImage:
     return canvas
 
 
-def build_beauty(state: str, scale: float = 2.8, pad: int = 70) -> QImage:
+def build_beauty(state: str, scale: float = 2.8, pad: int = 70,
+                 sessions: tuple = ()) -> QImage:
     settle, bolt = next((s, b) for st, _, _, s, b in TILES if st == state)
-    scene = render_scene_img(state, scale, settle, bolt)
+    scene = render_scene_img(state, scale, settle, bolt, sessions)
     cw, ch = scene.width() + pad * 2, scene.height() + pad * 2
     canvas = QImage(cw, ch, QImage.Format_ARGB32_Premultiplied)
     canvas.fill(Qt.transparent)
@@ -144,6 +152,9 @@ def main() -> None:
     beauty = build_beauty("asking")
     beauty.save(str(ASSETS / "asking.png"))
     print(f"wrote assets/asking.png  {beauty.width()}x{beauty.height()}")
+    fleet = build_beauty("asking", sessions=("working", "asking", "working"))
+    fleet.save(str(ASSETS / "fleet.png"))
+    print(f"wrote assets/fleet.png  {fleet.width()}x{fleet.height()}")
 
 
 if __name__ == "__main__":
