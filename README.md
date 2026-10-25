@@ -3,13 +3,23 @@
 > When Claude needs you, the beacon turns to you.
 > 它需要你时,光会转向你。
 
+[![tests](https://github.com/lilwan345/beacon/actions/workflows/tests.yml/badge.svg)](https://github.com/lilwan345/beacon/actions/workflows/tests.yml)
+![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+![Python](https://img.shields.io/badge/python-3.9%2B-3776ab)
+![PySide6](https://img.shields.io/badge/UI-PySide6-41cd52)
+[![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 <p align="center">
-  <img src="assets/states.png" alt="Beacon's six states — working, asking, idle, done, confused, resting" width="860">
+  <img src="assets/demo.gif" alt="Beacon crossfading through its states like changing weather" width="480">
 </p>
 
 A glass-domed lighthouse diorama that floats above all your windows (even
 fullscreen apps) and mirrors your **Claude Code** state in real time. Not a
 pet — **a tiny world whose weather is your agent's state**.
+
+<p align="center">
+  <img src="assets/states.png" alt="Beacon's six states — working, asking, idle, done, confused, resting" width="860">
+</p>
 
 | Claude Code | In the dome |
 |---|---|
@@ -43,6 +53,22 @@ jump straight to that session's terminal.
 <p align="center">
   <img src="assets/fleet.png" alt="Three sessions: two working boats in the back, the asking one up front" width="440">
 </p>
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Claude Code<br/>lifecycle events"] -- "event JSON on stdin" --> B["hooks/beacon_hook.py"]
+    B -- "one file per session,<br/>atomic write" --> C["~/.ai-desktop-toy/sessions/*.json"]
+    C -- "polled" --> D["effective state per session<br/>(staleness windows +<br/>transcript-freshness guard)"]
+    D -- "asking > confused > working<br/>> done > idle > resting" --> E["dome weather +<br/>one boat per session"]
+```
+
+The hook is stdlib-only, prints nothing and always exits 0, so a bug in it can
+never get in Claude's way. Each session's raw state is turned into an
+*effective* one: a "working" file with no new activity fades to idle, and an
+"asking" file whose transcript was written *after* the question means the
+prompt was already answered, so it stops counting as asking.
 
 ## Design
 
@@ -113,6 +139,11 @@ assets/     the rendered state images
 ```
 
 Run the tests with `python3 -m pytest tests/` (needs `pip install pytest`).
+They're headless (28 tests: state detection, staleness, the false-asking
+guard, fleet layout, the hook's event mapping, and that the installer is
+idempotent, keeps a backup and uninstalls cleanly), and CI runs them on Linux with Qt's offscreen platform on every
+push. `QT_QPA_PLATFORM=offscreen python3 tools/render_shots.py` regenerates
+the README images the same way.
 
 ## If this were a real product (next)
 
