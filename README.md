@@ -13,9 +13,11 @@
   <img src="assets/demo.gif" alt="Beacon crossfading through its states like changing weather" width="480">
 </p>
 
-A glass-domed lighthouse diorama that floats above all your windows (even
-fullscreen apps) and mirrors your **Claude Code** state in real time. Not a
-pet — **a tiny world whose weather is your agent's state**.
+When Claude Code stops to ask you something, it just waits, and if you're in
+another window you may not notice for a while. Beacon is a small glass-domed
+lighthouse that floats above all your windows (even fullscreen apps) and shows
+what your agent is doing as weather. When the agent needs you, the light turns
+toward you.
 
 <p align="center">
   <img src="assets/states.png" alt="Beacon's six states — working, asking, idle, done, confused, resting" width="860">
@@ -82,13 +84,7 @@ prompt was already answered, so it stops counting as asking.
 4. **Light-background safety by construction.** Every glow lands on the sky
    *inside* the dome. Nothing luminous ever touches your wallpaper, so it
    can't ring or plate light onto a white page.
-5. **Reads your real agent state.** A small Claude Code hook
-   (`hooks/beacon_hook.py`) writes one JSON file per session to
-   `~/.ai-desktop-toy/sessions/`; Beacon aggregates across concurrent
-   sessions: asking is sticky, a transcript-freshness guard kills false
-   "asking", and priority runs asking > confused > working > done > idle >
-   resting.
-6. **Precision over recall.** Only a real permission prompt or a question to
+5. **Precision over recall.** Only a real permission prompt or a question to
    you becomes *asking*, and only an API error ending the turn becomes
    *confused*; a failing test or an idle reminder never cries wolf. One false
    alarm and an ambient tool gets closed for good.
@@ -139,11 +135,11 @@ assets/     the rendered state images
 ```
 
 Run the tests with `python3 -m pytest tests/` (needs `pip install pytest`).
-They're headless (28 tests: state detection, staleness, the false-asking
-guard, fleet layout, the hook's event mapping, and that the installer is
-idempotent, keeps a backup and uninstalls cleanly), and CI runs them on Linux with Qt's offscreen platform on every
-push. `QT_QPA_PLATFORM=offscreen python3 tools/render_shots.py` regenerates
-the README images the same way.
+The 28 tests need no screen. They cover state detection, the false-alarm
+guard, the fleet layout, how the hook maps events, and that the installer
+keeps a backup, can run twice safely and uninstalls cleanly. CI runs them on
+every push. `QT_QPA_PLATFORM=offscreen python3 tools/render_shots.py`
+regenerates the README images the same way.
 
 ## If this were a real product (next)
 
